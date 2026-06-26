@@ -725,6 +725,34 @@ case "${1:-help}" in
         tail -f "$HOME/.paperclip/instances/default/logs"/*.log 2>/dev/null || \
         printf "  ${GY}No logs found${R}\n"
         ;;
+    update)
+        printf "\n  ${RD}▸${R} Updating DeepStack...\n\n"
+        TMPFILE=$(mktemp)
+        curl -fsSL https://raw.githubusercontent.com/yeaminlabs/paperstack/main/install.sh -o "$TMPFILE" 2>/dev/null
+        if [[ -s "$TMPFILE" ]]; then
+            SELF=$(which deepstack 2>/dev/null || echo "$HOME/.local/bin/deepstack")
+            # Extract the launcher from the install script and overwrite
+            sed -n '/^cat > "\$LAUNCHER" << '\''LAUNCHER_EOF'\''$/,/^LAUNCHER_EOF$/p' "$TMPFILE" | sed '1d;$d' > "${SELF}.new" 2>/dev/null
+            if [[ -s "${SELF}.new" ]]; then
+                mv "${SELF}.new" "$SELF"
+                chmod +x "$SELF"
+                printf "  ${G}✓${R} DeepStack CLI updated\n"
+            else
+                rm -f "${SELF}.new"
+                printf "  ${G}✓${R} CLI already up to date\n"
+            fi
+            # Update Paperclip
+            printf "  ${RD}▸${R} Updating Paperclip...\n"
+            npm update -g paperclipai 2>/dev/null && printf "  ${G}✓${R} Paperclip updated\n" || printf "  ${GY}·${R} Paperclip already latest\n"
+            # Update Hermes
+            printf "  ${RD}▸${R} Updating Hermes Agent...\n"
+            run_as_paperclip "pipx upgrade hermes-agent 2>/dev/null" && printf "  ${G}✓${R} Hermes updated\n" || printf "  ${GY}·${R} Hermes already latest\n"
+        else
+            printf "  ${RD}✗${R} Failed to fetch update from GitHub\n"
+        fi
+        rm -f "$TMPFILE"
+        echo ""
+        ;;
     allow-host)
         shift
         if [[ -z "${1:-}" ]]; then
@@ -749,6 +777,7 @@ case "${1:-help}" in
         printf "    ${AC}start${R}       Start server\n"
         printf "    ${AC}stop${R}        Stop server\n"
         printf "    ${AC}status${R}      Check status\n"
+        printf "    ${AC}update${R}      Update from GitHub + packages\n"
         printf "    ${AC}allow-host${R}  Allow a hostname/IP for access\n"
         printf "    ${AC}config${R}      Show config\n"
         printf "    ${AC}doctor${R}      Run diagnostics\n"
