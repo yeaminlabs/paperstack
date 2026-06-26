@@ -577,9 +577,8 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   },
   logging: { mode: 'file', logDir: '$INSTANCE_DIR/logs' },
   server: {
-    deploymentMode: 'self_hosted', exposure: 'private',
-    bind: 'custom', host: '0.0.0.0', port: 3100,
-    customBindHost: '0.0.0.0',
+    deploymentMode: 'authenticated', exposure: 'private',
+    bind: 'lan', host: '0.0.0.0', port: 3100,
     allowedHostnames: [], serveUi: true
   },
   auth: { baseUrlMode: 'auto', disableSignUp: false },
@@ -630,11 +629,10 @@ const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.server = c.server || {};
-c.server.deploymentMode = 'self_hosted';
+c.server.deploymentMode = 'authenticated';
 c.server.exposure = 'private';
-c.server.bind = 'custom';
+c.server.bind = 'lan';
 c.server.host = '0.0.0.0';
-c.server.customBindHost = '0.0.0.0';
 c.server.port = 3100;
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
