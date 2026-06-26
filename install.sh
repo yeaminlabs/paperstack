@@ -1022,23 +1022,24 @@ case "${1:-help}" in
             CADDY_CONF="${CADDY_CONF}}"
 
             if [[ "$(whoami)" == "root" ]]; then
-                echo "$CADDY_CONF" > "$CADDYFILE" 2>/dev/null || true
-                systemctl enable caddy >/dev/null 2>&1 || true
-                systemctl restart caddy >/dev/null 2>&1 || caddy reload --config "$CADDYFILE" >/dev/null 2>&1 || true
+                echo "$CADDY_CONF" > "$CADDYFILE"
+                systemctl enable caddy || true
+                systemctl restart caddy || caddy reload --config "$CADDYFILE" || true
             else
                 TMP_CADDY=$(mktemp)
                 echo "$CADDY_CONF" > "$TMP_CADDY"
-                sudo mv "$TMP_CADDY" "$CADDYFILE" 2>/dev/null || true
-                sudo systemctl enable caddy >/dev/null 2>&1 || true
-                sudo systemctl restart caddy >/dev/null 2>&1 || sudo caddy reload --config "$CADDYFILE" >/dev/null 2>&1 || true
+                sudo mv "$TMP_CADDY" "$CADDYFILE"
+                sudo systemctl enable caddy || true
+                sudo systemctl restart caddy || sudo caddy reload --config "$CADDYFILE" || true
             fi
             printf "  ${G}✓${R} Caddy configured for HTTPS\n"
         else
             printf "  ${RD}✗${R} Caddy installation failed.\n"
         fi
         
-        run_as_paperclip "npx paperclipai allowed-hostname $DOM" >/dev/null 2>&1 || true
-        printf "  ${G}✓${R} Allowed hostname updated in Paperclip\n"
+        run_as_paperclip "npx paperclipai allowed-hostname $DOM"
+        run_as_paperclip "pm2 restart deepstack >/dev/null 2>&1"
+        printf "  ${G}✓${R} Allowed hostname updated & Paperclip restarted\n"
         printf "\n  ${B}${W}Done! Paperclip is now available at: ${G}https://$DOM${R}\n\n"
         ;;
     allow-host)
