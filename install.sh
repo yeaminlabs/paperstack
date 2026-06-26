@@ -499,8 +499,19 @@ else
         # Copy node/npm/npx to paperclip user's PATH
         PAPERCLIP_HOME=$(eval echo ~paperclip)
 
-        # Give paperclip user access to node/npm
         mkdir -p "$PAPERCLIP_HOME/.local/bin"
+
+        # Fix npm global modules permissions so paperclip user can run paperclipai
+        NPM_GLOBAL=$(npm root -g 2>/dev/null || echo "/usr/lib/node_modules")
+        if [[ -d "$NPM_GLOBAL/paperclipai" ]]; then
+            chmod -R a+rX "$NPM_GLOBAL/paperclipai" 2>/dev/null || true
+            # Fix the specific symlink permission issue with embedded-postgres
+            find "$NPM_GLOBAL/paperclipai" -name "*.so*" -exec chmod a+r {} \; 2>/dev/null || true
+            find "$NPM_GLOBAL/paperclipai" -type d -exec chmod a+rx {} \; 2>/dev/null || true
+            # Allow symlink creation in the native lib dirs
+            find "$NPM_GLOBAL/paperclipai" -path "*/native/lib" -type d -exec chmod a+rwx {} \; 2>/dev/null || true
+            find "$NPM_GLOBAL/paperclipai" -path "*/native" -type d -exec chmod a+rwx {} \; 2>/dev/null || true
+        fi
 
         # Copy hermes + pipx stuff to paperclip user
         if [[ -d "$HOME/.local/share/pipx" ]]; then
@@ -546,7 +557,7 @@ const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.server = c.server || {};
-c.server.bind = 'all';
+c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null
@@ -564,7 +575,7 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   logging: { mode: 'file', logDir: '$INSTANCE_DIR/logs' },
   server: {
     deploymentMode: 'local_trusted', exposure: 'private',
-    bind: 'all', host: '0.0.0.0', port: 3100,
+    bind: 'custom', host: '0.0.0.0', port: 3100,
     allowedHostnames: [], serveUi: true
   },
   auth: { baseUrlMode: 'auto', disableSignUp: false },
@@ -630,7 +641,7 @@ const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.server = c.server || {};
-c.server.bind = 'all';
+c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
