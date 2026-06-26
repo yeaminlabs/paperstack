@@ -9,18 +9,8 @@ set -euo pipefail
 
 PAPERSTACK_VERSION="1.0.0"
 
-# ── TTY detection ────────────────────────────────────────────
-# When piped from curl, stdin is the pipe and stdout may not be a tty.
-# Reopen stdin from /dev/tty so interactive prompts work.
-if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
-    exec 3</dev/tty || true
-else
-    exec 3<&0
-fi
-TTY_FD=3
-
 # ── Colors & Formatting ─────────────────────────────────────
-# Enable colors if /dev/tty exists (even when stdout is piped through)
+# Enable colors broadly — most modern terminals support 256 colors
 if command -v tput &>/dev/null && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
     RST="\033[0m"
     BOLD="\033[1m"
@@ -137,13 +127,13 @@ prompt_input() {
         printf "  ${S_KEY} ${BOLD}${WHITE}%s${RST}\n" "$label"
         [[ -n "$default" ]] && printf "  ${S_PIPE} ${DIM}Press enter to keep existing key${RST}\n"
         printf "  ${S_PIPE} ${CYAN}▸ ${RST}"
-        read -rs value <&${TTY_FD}
+        read -r value </dev/tty 2>/dev/null || read -r value
         echo ""
     else
         printf "  ${S_GEAR} ${BOLD}${WHITE}%s${RST}\n" "$label"
         [[ -n "$default" ]] && printf "  ${S_PIPE} ${DIM}Default: %s${RST}\n" "$default"
         printf "  ${S_PIPE} ${CYAN}▸ ${RST}"
-        read -r value <&${TTY_FD}
+        read -r value </dev/tty 2>/dev/null || read -r value
     fi
     value="${value:-$default}"
     eval "$var_name='$value'"
@@ -160,7 +150,7 @@ prompt_select() {
     printf "  ${S_GEAR} ${BOLD}${WHITE}%s${RST}\n" "$label"
 
     # If no tty available, default to first option
-    if ! exec 2>/dev/null <&${TTY_FD}; then
+    if [[ ! -e /dev/tty ]]; then
         eval "$var_name='${options[0]}'"
         printf "  ${S_PIPE} ${DIM}Auto-selected: ${options[0]}${RST}\n"
         return
@@ -175,7 +165,7 @@ prompt_select() {
             fi
         done
 
-        read -rsn1 key <&${TTY_FD}
+        read -rsn1 key </dev/tty
         case "$key" in
             A) ((selected > 0)) && ((selected--)) ;;  # Up
             B) ((selected < count - 1)) && ((selected++)) ;;  # Down
@@ -569,7 +559,7 @@ main() {
 
     if [[ -e /dev/tty ]]; then
         printf "  ${BOLD}${WHITE}Proceed with installation?${RST} ${DIM}[Y/n]${RST} "
-        read -r confirm <&${TTY_FD}
+        read -r confirm </dev/tty 2>/dev/null || read -r confirm
         if [[ "$confirm" =~ ^[Nn] ]]; then
             echo ""
             printf "  ${GRAY}Installation cancelled.${RST}\n\n"
