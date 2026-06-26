@@ -560,7 +560,7 @@ c.server = c.server || {};
 c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
 c.server.customBindHost = '0.0.0.0';
-c.server.deploymentMode = 'local_trusted';
+c.server.deploymentMode = 'self_hosted';
 c.server.exposure = 'private';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null
@@ -577,7 +577,7 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   },
   logging: { mode: 'file', logDir: '$INSTANCE_DIR/logs' },
   server: {
-    deploymentMode: 'local_trusted', exposure: 'private',
+    deploymentMode: 'self_hosted', exposure: 'private',
     bind: 'custom', host: '0.0.0.0', port: 3100,
     customBindHost: '0.0.0.0',
     allowedHostnames: [], serveUi: true
@@ -648,7 +648,7 @@ c.server = c.server || {};
 c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
 c.server.customBindHost = '0.0.0.0';
-c.server.deploymentMode = 'local_trusted';
+c.server.deploymentMode = 'self_hosted';
 c.server.exposure = 'private';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
