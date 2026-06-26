@@ -258,16 +258,47 @@ esac
 ok "Model" "$MODEL"
 
 # ══════════════════════════════════════════════════════════════
-#  STEP 4 — Confirm & Install
+#  STEP 4 — Custom Domain & SSL Setup
 # ══════════════════════════════════════════════════════════════
 echo ""
 line
 echo ""
-printf "  ${BOLD}${R1}STEP 4${RST} ${BOLD}${WHITE}— Confirm & install${RST}\n\n"
+printf "  ${BOLD}${R1}STEP 4${RST} ${BOLD}${WHITE}— Custom Domain & SSL Setup${RST}\n\n"
+
+printf "    ${GRAY}Would you like to set up a custom domain with automated HTTPS?${RST}\n"
+printf "    ${DIM}(Requires a domain pointing to this server's IP via A record)${RST}\n\n"
+
+ask "Setup custom domain? [y/N]:"
+if [[ "${REPLY:-n}" =~ ^[Yy] ]]; then
+    ask "Enter your domain (e.g., paperclip.example.com):"
+    CUSTOM_DOMAIN="${REPLY:-}"
+    if [[ -n "$CUSTOM_DOMAIN" ]]; then
+        ask "Enter an email for SSL expiration notices (optional):"
+        SSL_EMAIL="${REPLY:-}"
+        ok "Domain" "$CUSTOM_DOMAIN (HTTPS via Caddy)"
+    else
+        warn "Domain" "Skipping custom domain setup"
+        CUSTOM_DOMAIN=""
+    fi
+else
+    CUSTOM_DOMAIN=""
+fi
+
+# ══════════════════════════════════════════════════════════════
+#  STEP 5 — Confirm & Install
+# ══════════════════════════════════════════════════════════════
+echo ""
+line
+echo ""
+printf "  ${BOLD}${R1}STEP 5${RST} ${BOLD}${WHITE}— Confirm & install${RST}\n\n"
 
 printf "    ${GRAY}Provider :${RST}  ${ACCENT}${PROVIDER}${RST}\n"
 printf "    ${GRAY}Model    :${RST}  ${ACCENT}${MODEL}${RST}\n"
-printf "    ${GRAY}API Key  :${RST}  ${GRAY}${MASKED}${RST}\n\n"
+printf "    ${GRAY}API Key  :${RST}  ${GRAY}${MASKED}${RST}\n"
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+    printf "    ${GRAY}Domain   :${RST}  ${GREEN}https://${CUSTOM_DOMAIN}${RST}\n"
+fi
+printf "\n"
 
 printf "    ${WHITE}Will install:${RST}\n"
 printf "    ${ACCENT}◆${RST} Node.js          ${DIM}(runtime)${RST}\n"
@@ -275,6 +306,9 @@ printf "    ${ACCENT}◆${RST} Python 3         ${DIM}(runtime)${RST}\n"
 printf "    ${ACCENT}◆${RST} pipx             ${DIM}(package manager)${RST}\n"
 printf "    ${ACCENT}◆${RST} Paperclip        ${DIM}(AI company platform)${RST}\n"
 printf "    ${ACCENT}◆${RST} Hermes Agent     ${DIM}(multi-LLM agent)${RST}\n"
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+    printf "    ${ACCENT}◆${RST} Caddy            ${DIM}(reverse proxy + auto SSL)${RST}\n"
+fi
 echo ""
 
 ask "Install now? [Y/n]:"
@@ -382,6 +416,67 @@ printf "\r"
 export PATH="$HOME/.local/bin:$PATH"
 HERMES_BIN=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
 [[ -x "$HERMES_BIN" ]] && ok "Hermes Agent" "$($HERMES_BIN --version 2>/dev/null || echo 'installed')" || fail "Hermes Agent" "install failed"
+
+# ── Caddy (Auto SSL) ─────────────────────────────────────────
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+    if check_cmd caddy; then
+        ok "Caddy" "$(caddy version | awk '{print $1}') (already installed)"
+    else
+        msg "Installing Caddy for SSL..."
+        case "$OS" in
+            linux)
+                if check_cmd apt-get; then
+                    (sudo apt-get install -y -qq debian-keyring debian-archive-keyring apt-transport-https >/dev/null 2>&1 && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null 2>&1 && curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null 2>&1 && sudo apt-get update -qq >/dev/null 2>&1 && sudo apt-get install caddy -y -qq >/dev/null 2>&1) &>/dev/null &
+                elif check_cmd dnf; then
+                    (sudo dnf install 'dnf-command(copr)' -y >/dev/null 2>&1 && sudo dnf copr enable @caddy/caddy -y >/dev/null 2>&1 && sudo dnf install caddy -y >/dev/null 2>&1) &>/dev/null &
+                elif check_cmd yum; then
+                    (sudo yum install yum-plugin-copr -y >/dev/null 2>&1 && sudo yum copr enable @caddy/caddy -y >/dev/null 2>&1 && sudo yum install caddy -y >/dev/null 2>&1) &>/dev/null &
+                elif check_cmd apk; then
+                    (sudo apk add --no-cache caddy >/dev/null 2>&1) &>/dev/null &
+                fi
+                ;;
+            macos)
+                if check_cmd brew; then
+                    (brew install caddy >/dev/null 2>&1) &>/dev/null &
+                fi
+                ;;
+        esac
+        spinner $! "Installing Caddy..."
+        check_cmd caddy && ok "Caddy" "installed" || fail "Caddy" "install failed (ensure it's installed manually for SSL)"
+    fi
+
+    if check_cmd caddy; then
+        msg "Configuring Caddy for ${CUSTOM_DOMAIN}..."
+        CADDYFILE="/etc/caddy/Caddyfile"
+        if [[ "$OS" == "macos" ]]; then
+            CADDYFILE="/usr/local/etc/Caddyfile"
+        fi
+        
+        # Build Caddyfile content
+        CADDY_CONF="${CUSTOM_DOMAIN} {
+    reverse_proxy localhost:3100
+"
+        if [[ -n "$SSL_EMAIL" ]]; then
+            CADDY_CONF="${CADDY_CONF}    tls ${SSL_EMAIL}
+"
+        fi
+        CADDY_CONF="${CADDY_CONF}}"
+
+        # Write Caddyfile
+        if [[ "$(whoami)" == "root" ]]; then
+            echo "$CADDY_CONF" > "$CADDYFILE" 2>/dev/null || true
+            systemctl enable caddy >/dev/null 2>&1 || true
+            systemctl restart caddy >/dev/null 2>&1 || caddy reload --config "$CADDYFILE" >/dev/null 2>&1 || true
+        else
+            TMP_CADDY=$(mktemp)
+            echo "$CADDY_CONF" > "$TMP_CADDY"
+            sudo mv "$TMP_CADDY" "$CADDYFILE" 2>/dev/null || true
+            sudo systemctl enable caddy >/dev/null 2>&1 || true
+            sudo systemctl restart caddy >/dev/null 2>&1 || sudo caddy reload --config "$CADDYFILE" >/dev/null 2>&1 || true
+        fi
+        ok "SSL" "Caddy reverse proxy configured for ${CUSTOM_DOMAIN}"
+    fi
+fi
 
 # ══════════════════════════════════════════════════════════════
 #  CONFIGURING
@@ -590,6 +685,16 @@ fs.writeFileSync(p, JSON.stringify(c, null, 2));
                 npx paperclipai allowed-hostname "$SERVER_IP" 2>&1 || true
             fi
             ok "Allowed host" "$SERVER_IP"
+        fi
+        
+        # Auto-add custom domain as allowed hostname
+        if [[ -n "$CUSTOM_DOMAIN" ]]; then
+            if [[ "$(whoami)" == "root" ]]; then
+                su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai allowed-hostname $CUSTOM_DOMAIN" 2>&1 || true
+            else
+                npx paperclipai allowed-hostname "$CUSTOM_DOMAIN" 2>&1 || true
+            fi
+            ok "Allowed host" "$CUSTOM_DOMAIN"
         fi
     fi
 
@@ -943,9 +1048,14 @@ SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || curl -sf ifconfig.me 2
 printf "    ${GREEN}Server is running in background via PM2${RST}\n"
 printf "    ${GREEN}Auto-restarts on crash + survives reboot${RST}\n\n"
 
-printf "    ${ACCENT}1.${RST} ${WHITE}Open the web dashboard (use http, NOT https):${RST}\n"
-printf "       ${ULINE}${ACCENT}http://${SERVER_IP}:3100${RST}\n\n"
-printf "       ${RED}⚠  Use http:// not https:// — there is no SSL${RST}\n\n"
+printf "    ${ACCENT}1.${RST} ${WHITE}Open the web dashboard:${RST}\n"
+if [[ -n "$CUSTOM_DOMAIN" ]]; then
+    printf "       ${ULINE}${GREEN}https://${CUSTOM_DOMAIN}${RST}\n\n"
+    printf "       ${DIM}SSL has been automatically provisioned via Caddy!${RST}\n\n"
+else
+    printf "       ${ULINE}${ACCENT}http://${SERVER_IP}:3100${RST}\n\n"
+    printf "       ${RED}⚠  Use http:// not https:// — there is no SSL${RST}\n\n"
+fi
 
 printf "    ${ACCENT}2.${RST} ${WHITE}Commands:${RST}\n"
 printf "       ${GREEN}deepstack status${RST}     ${DIM}Check status${RST}\n"
