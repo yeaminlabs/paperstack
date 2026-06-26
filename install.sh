@@ -92,6 +92,24 @@ USER_NAME=$(whoami)
 printf "  ${GRAY}System:${RST} ${WHITE}${OS}/${ARCH}${RST}  ${GRAY}User:${RST} ${WHITE}${USER_NAME}${RST}\n\n"
 line
 
+# ── Resume check ─────────────────────────────────────────────
+RESUME_FILE="$HOME/.deepstack/install_config"
+RESUMING=false
+
+if [[ -f "$HOME/.deepstack_install_state" ]] && [[ -f "$RESUME_FILE" ]]; then
+    echo ""
+    printf "  ${YELLOW}⚡${RST} ${BOLD}${WHITE}Previous incomplete install found.${RST}\n"
+    source "$RESUME_FILE"
+    MASKED="${API_KEY:0:8}...${API_KEY: -4}"
+    printf "  ${GRAY}Provider: ${ACCENT}${PROVIDER}${RST}  ${GRAY}Model: ${ACCENT}${MODEL}${RST}  ${GRAY}Key: ${GRAY}${MASKED}${RST}\n"
+    ask "Resume? [Y/n]:"
+    if [[ ! "${REPLY:-y}" =~ ^[Nn] ]]; then
+        RESUMING=true
+    fi
+fi
+
+if [[ "$RESUMING" == "false" ]]; then
+
 # ══════════════════════════════════════════════════════════════
 #  STEP 1 — Choose LLM Provider
 # ══════════════════════════════════════════════════════════════
@@ -254,6 +272,29 @@ if [[ "${REPLY:-y}" =~ ^[Nn] ]]; then
     exit 0
 fi
 
+fi  # end of RESUMING==false block
+
+# ══════════════════════════════════════════════════════════════
+#  STATE TRACKING — resume from where we left off
+# ══════════════════════════════════════════════════════════════
+STATE_FILE="$HOME/.deepstack_install_state"
+
+mark_done()  { echo "$1" >> "$STATE_FILE"; }
+is_done()    { [[ -f "$STATE_FILE" ]] && grep -qxF "$1" "$STATE_FILE" 2>/dev/null; }
+
+if [[ -f "$STATE_FILE" ]]; then
+    echo ""
+    printf "  ${YELLOW}⚡${RST} ${WHITE}Previous install detected — resuming from where it stopped${RST}\n"
+fi
+
+# Save config for resume
+mkdir -p "$HOME/.deepstack"
+cat > "$HOME/.deepstack/install_config" <<EOF
+PROVIDER=${PROVIDER}
+API_KEY=${API_KEY}
+MODEL=${MODEL}
+EOF
+
 # ══════════════════════════════════════════════════════════════
 #  INSTALLING
 # ══════════════════════════════════════════════════════════════
@@ -263,11 +304,14 @@ echo ""
 printf "  ${BOLD}${WHITE}Installing...${RST}\n\n"
 
 # ── Node.js ──────────────────────────────────────────────────
-if check_cmd node; then
+if is_done "node"; then
+    ok "Node.js" "(done)"
+elif check_cmd node; then
     NODE_VER=$(node -v 2>/dev/null | sed 's/v//')
     NODE_MAJOR=$(echo "$NODE_VER" | cut -d. -f1)
     if [[ $NODE_MAJOR -ge 20 ]]; then
         ok "Node.js" "v${NODE_VER} (already installed)"
+        mark_done "node"
     fi
 else
     msg "Installing Node.js..."
@@ -289,13 +333,21 @@ else
             fi
             ;;
     esac
-    check_cmd node && ok "Node.js" "v$(node -v | sed 's/v//')" || fail "Node.js" "install failed"
+    if check_cmd node; then
+        ok "Node.js" "v$(node -v | sed 's/v//')"
+        mark_done "node"
+    else
+        fail "Node.js" "install failed"
+    fi
 fi
 
 # ── Python ───────────────────────────────────────────────────
-if check_cmd python3; then
+if is_done "python"; then
+    ok "Python" "(done)"
+elif check_cmd python3; then
     PY_VER=$(python3 --version | awk '{print $2}')
     ok "Python" "v${PY_VER} (already installed)"
+    mark_done "python"
 else
     msg "Installing Python 3..."
     case "$OS" in
@@ -316,12 +368,21 @@ else
             fi
             ;;
     esac
-    check_cmd python3 && ok "Python" "v$(python3 --version | awk '{print $2}')" || fail "Python" "install failed"
+    if check_cmd python3; then
+        ok "Python" "v$(python3 --version | awk '{print $2}')"
+        mark_done "python"
+    else
+        fail "Python" "install failed"
+    fi
 fi
 
 # ── pipx ─────────────────────────────────────────────────────
-if check_cmd pipx; then
+export PATH="$HOME/.local/bin:$PATH"
+if is_done "pipx"; then
+    ok "pipx" "(done)"
+elif check_cmd pipx; then
     ok "pipx" "$(pipx --version 2>/dev/null)"
+    mark_done "pipx"
 else
     msg "Installing pipx..."
     case "$OS" in
@@ -335,28 +396,43 @@ else
     spinner $! "Installing pipx..."
     pipx ensurepath &>/dev/null 2>&1 || true
     export PATH="$HOME/.local/bin:$PATH"
-    check_cmd pipx && ok "pipx" "installed" || fail "pipx" "install failed"
+    if check_cmd pipx; then
+        ok "pipx" "installed"
+        mark_done "pipx"
+    else
+        fail "pipx" "install failed"
+    fi
 fi
 
 # ── Paperclip ────────────────────────────────────────────────
-msg "Installing Paperclip..."
-(npm install -g paperclipai 2>/dev/null || npx paperclipai --version) &>/dev/null &
-spinner $! "Installing Paperclip..."
-printf "\r"
-ok "Paperclip" "$(npx paperclipai --version 2>/dev/null || echo 'latest')"
+if is_done "paperclip_install"; then
+    ok "Paperclip" "(done)"
+else
+    msg "Installing Paperclip..."
+    (npm install -g paperclipai 2>/dev/null || npx paperclipai --version) &>/dev/null &
+    spinner $! "Installing Paperclip..."
+    printf "\r"
+    ok "Paperclip" "$(npx paperclipai --version 2>/dev/null || echo 'latest')"
+    mark_done "paperclip_install"
+fi
 
 # ── Hermes Agent ─────────────────────────────────────────────
-msg "Installing Hermes Agent..."
-(pipx install hermes-agent 2>/dev/null || pipx upgrade hermes-agent 2>/dev/null) &>/dev/null &
-spinner $! "Installing Hermes Agent..."
-printf "\r"
-export PATH="$HOME/.local/bin:$PATH"
-
-HERMES_BIN=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
-if [[ -x "$HERMES_BIN" ]]; then
-    ok "Hermes Agent" "$($HERMES_BIN --version 2>/dev/null || echo 'installed')"
+if is_done "hermes_install"; then
+    ok "Hermes Agent" "(done)"
 else
-    fail "Hermes Agent" "install failed"
+    msg "Installing Hermes Agent..."
+    (pipx install hermes-agent 2>/dev/null || pipx upgrade hermes-agent 2>/dev/null) &>/dev/null &
+    spinner $! "Installing Hermes Agent..."
+    printf "\r"
+    export PATH="$HOME/.local/bin:$PATH"
+
+    HERMES_BIN=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
+    if [[ -x "$HERMES_BIN" ]]; then
+        ok "Hermes Agent" "$($HERMES_BIN --version 2>/dev/null || echo 'installed')"
+        mark_done "hermes_install"
+    else
+        fail "Hermes Agent" "install failed"
+    fi
 fi
 
 # ══════════════════════════════════════════════════════════════
@@ -367,29 +443,77 @@ line
 echo ""
 printf "  ${BOLD}${WHITE}Configuring...${RST}\n\n"
 
-# ── Hermes config ────────────────────────────────────────────
-"$HERMES_BIN" config set provider "$PROVIDER" &>/dev/null 2>&1 || true
-"$HERMES_BIN" config set api_key "$API_KEY" &>/dev/null 2>&1 || true
-"$HERMES_BIN" config set model "$MODEL" &>/dev/null 2>&1 || true
+export PATH="$HOME/.local/bin:$PATH"
+HERMES_BIN=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
 
-mkdir -p "$HOME/.hermes"
-ENV_KEY=$(echo "${PROVIDER}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
-cat > "$HOME/.hermes/.env" <<EOF
+# ── Hermes config ────────────────────────────────────────────
+if is_done "hermes_config"; then
+    ok "Hermes" "(done)"
+else
+    "$HERMES_BIN" config set provider "$PROVIDER" &>/dev/null 2>&1 || true
+    "$HERMES_BIN" config set api_key "$API_KEY" &>/dev/null 2>&1 || true
+    "$HERMES_BIN" config set model "$MODEL" &>/dev/null 2>&1 || true
+
+    mkdir -p "$HOME/.hermes"
+    ENV_KEY=$(echo "${PROVIDER}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')
+    cat > "$HOME/.hermes/.env" <<EOF
 ${ENV_KEY}_API_KEY=${API_KEY}
 EOF
 
-ok "Hermes" "provider=${PROVIDER}  model=${MODEL}"
+    ok "Hermes" "provider=${PROVIDER}  model=${MODEL}"
+    mark_done "hermes_config"
+fi
 
 # ── Paperclip onboard ────────────────────────────────────────
-msg "Setting up Paperclip..."
-(npx paperclipai onboard --yes) &>/dev/null &
-spinner $! "Running Paperclip onboard..."
-printf "\r"
-
-if [[ -f "$HOME/.paperclip/instances/default/config.json" ]]; then
-    ok "Paperclip" "configured at ~/.paperclip"
+if is_done "paperclip_config"; then
+    ok "Paperclip" "(done)"
 else
-    warn "Paperclip" "run: npx paperclipai configure"
+    # Kill any existing Paperclip process hogging the port
+    if command -v lsof &>/dev/null; then
+        PID_ON_PORT=$(lsof -ti :3100 2>/dev/null || true)
+        if [[ -n "$PID_ON_PORT" ]]; then
+            kill "$PID_ON_PORT" 2>/dev/null || true
+            sleep 1
+        fi
+    fi
+
+    msg "Setting up Paperclip..."
+    npx paperclipai onboard --yes &>/dev/null &
+    spinner $! "Running Paperclip onboard..."
+    printf "\r"
+
+    # Fix Postgres-as-root: enable createPostgresUser in config
+    CONFIG_FILE="$HOME/.paperclip/instances/default/config.json"
+    if [[ -f "$CONFIG_FILE" ]] && [[ "$(whoami)" == "root" ]]; then
+        if check_cmd python3; then
+            python3 -c "
+import json, sys
+with open('$CONFIG_FILE', 'r') as f:
+    cfg = json.load(f)
+db = cfg.get('database', {})
+db['createPostgresUser'] = True
+cfg['database'] = db
+with open('$CONFIG_FILE', 'w') as f:
+    json.dump(cfg, f, indent=2)
+" 2>/dev/null || true
+        elif check_cmd node; then
+            node -e "
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+cfg.database = cfg.database || {};
+cfg.database.createPostgresUser = true;
+fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 2));
+" 2>/dev/null || true
+        fi
+        ok "Root fix" "createPostgresUser enabled for embedded Postgres"
+    fi
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        ok "Paperclip" "configured at ~/.paperclip"
+        mark_done "paperclip_config"
+    else
+        warn "Paperclip" "run: npx paperclipai configure"
+    fi
 fi
 
 # ── Launcher script ──────────────────────────────────────────
@@ -471,3 +595,7 @@ printf "  ${GRAY}Config :${RST}  ${DIM}~/.hermes/config.yaml${RST}\n\n"
 printf "  ${DIM}Add to PATH if needed:${RST}\n"
 printf "  ${DARK}export PATH=\"\$HOME/.local/bin:\$PATH\"${RST}\n\n"
 printf "  ${R3}SNBDHOST${RST} ${DARK}· Internal Use Only · Copyright yeaminlabs${RST}\n\n"
+
+# Clean up state file — install completed successfully
+rm -f "$STATE_FILE" 2>/dev/null || true
+rm -f "$HOME/.deepstack/install_config" 2>/dev/null || true
