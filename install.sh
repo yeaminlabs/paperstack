@@ -492,13 +492,16 @@ else
         msg "Running as root — pre-configuring Postgres user creation..."
 
         if [[ -f "$CONFIG_FILE" ]]; then
-            # Patch existing config
+            # Patch existing config — root fix + bind to all interfaces
             node -e "
 const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.database = c.database || {};
 c.database.createPostgresUser = true;
+c.server = c.server || {};
+c.server.bind = 'all';
+c.server.host = '0.0.0.0';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null
         else
@@ -517,7 +520,7 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   logging: { mode: 'file', logDir: '$INSTANCE_DIR/logs' },
   server: {
     deploymentMode: 'local_trusted', exposure: 'private',
-    bind: 'loopback', host: '127.0.0.1', port: 3100,
+    bind: 'all', host: '0.0.0.0', port: 3100,
     allowedHostnames: [], serveUi: true
   },
   auth: { baseUrlMode: 'auto', disableSignUp: false },
@@ -570,16 +573,20 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
     fi
     sleep 1
 
-    # ── STEP D: Re-apply root fix (onboard may have overwritten config) ──
-    if [[ "$(whoami)" == "root" ]] && [[ -f "$CONFIG_FILE" ]]; then
+    # ── STEP D: Re-apply fixes (onboard may have overwritten config) ──
+    if [[ -f "$CONFIG_FILE" ]]; then
         node -e "
 const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.database = c.database || {};
 c.database.createPostgresUser = true;
+c.server = c.server || {};
+c.server.bind = 'all';
+c.server.host = '0.0.0.0';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
+        ok "Network" "bound to 0.0.0.0 (accessible from any IP)"
     fi
 
     echo ""
@@ -673,8 +680,10 @@ printf "  ${BOLD}${WHITE}HOW TO USE${RST}\n\n"
 printf "    ${ACCENT}1.${RST} ${WHITE}Start the server:${RST}\n"
 printf "       ${GREEN}deepstack start${RST}\n\n"
 
-printf "    ${ACCENT}2.${RST} ${WHITE}Open the web dashboard:${RST}\n"
-printf "       ${ULINE}${ACCENT}http://YOUR-SERVER-IP:3100${RST}\n\n"
+SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || curl -sf ifconfig.me 2>/dev/null || echo "YOUR-SERVER-IP")
+printf "    ${ACCENT}2.${RST} ${WHITE}Open the web dashboard (use http, NOT https):${RST}\n"
+printf "       ${ULINE}${ACCENT}http://${SERVER_IP}:3100${RST}\n\n"
+printf "       ${RED}⚠  Use http:// not https:// — there is no SSL${RST}\n\n"
 
 printf "    ${ACCENT}3.${RST} ${WHITE}Other commands:${RST}\n"
 printf "       ${GREEN}deepstack status${RST}   ${DIM}Check if running${RST}\n"
