@@ -468,77 +468,133 @@ fi
 if is_done "paperclip_config"; then
     ok "Paperclip" "(done)"
 else
-    # Kill any existing Paperclip process hogging the port
-    if command -v fuser &>/dev/null; then
-        fuser -k 3100/tcp 2>/dev/null || true
-    elif command -v lsof &>/dev/null; then
-        PID_ON_PORT=$(lsof -ti :3100 2>/dev/null || true)
-        [[ -n "$PID_ON_PORT" ]] && kill "$PID_ON_PORT" 2>/dev/null || true
-    fi
-    sleep 1
-
-    # Fix Postgres-as-root BEFORE onboard so it doesn't fail
-    CONFIG_FILE="$HOME/.paperclip/instances/default/config.json"
-    if [[ "$(whoami)" == "root" ]]; then
-        if [[ -f "$CONFIG_FILE" ]]; then
-            # Patch existing config
-            node -e "
-const fs = require('fs');
-const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-cfg.database = cfg.database || {};
-cfg.database.createPostgresUser = true;
-fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 2));
-" 2>/dev/null || true
-            ok "Root fix" "createPostgresUser enabled"
-        fi
-    fi
-
     echo ""
     line
     echo ""
     printf "  ${BOLD}${WHITE}Setting up Paperclip...${RST}\n\n"
 
-    # Run onboard directly (NOT in background) so output is visible
-    # Use timeout to prevent hanging — onboard --yes also starts the
-    # server which blocks forever, so we just run configure + onboard
-    # without --yes, or with a timeout that kills the server part.
-    if [[ -f "$CONFIG_FILE" ]]; then
-        # Already onboarded before, just need the root fix
-        ok "Paperclip" "already configured at ~/.paperclip"
-    else
-        # First time — run onboard with timeout (onboard part takes ~10s,
-        # but --yes then starts the server which blocks forever)
-        timeout 60 npx paperclipai onboard --yes 2>&1 || true
-    fi
-
-    # Re-apply root fix after onboard (in case onboard recreated the config)
-    CONFIG_FILE="$HOME/.paperclip/instances/default/config.json"
-    if [[ "$(whoami)" == "root" ]] && [[ -f "$CONFIG_FILE" ]]; then
-        node -e "
-const fs = require('fs');
-const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
-cfg.database = cfg.database || {};
-cfg.database.createPostgresUser = true;
-fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 2));
-" 2>/dev/null || true
-        ok "Root fix" "createPostgresUser enabled for embedded Postgres"
-    fi
-
-    # Kill the server that --yes started (if it's still running)
+    # ── STEP A: Kill anything on port 3100 ──
+    pkill -f "paperclipai" 2>/dev/null || true
     if command -v fuser &>/dev/null; then
         fuser -k 3100/tcp 2>/dev/null || true
     elif command -v lsof &>/dev/null; then
-        PID_ON_PORT=$(lsof -ti :3100 2>/dev/null || true)
-        [[ -n "$PID_ON_PORT" ]] && kill "$PID_ON_PORT" 2>/dev/null || true
+        lsof -ti :3100 2>/dev/null | xargs kill 2>/dev/null || true
     fi
+    sleep 1
+
+    # ── STEP B: Pre-create config with root Postgres fix ──
+    # This MUST happen before onboard so Postgres doesn't choke on root
+    INSTANCE_DIR="$HOME/.paperclip/instances/default"
+    CONFIG_FILE="$INSTANCE_DIR/config.json"
+    mkdir -p "$INSTANCE_DIR/secrets" "$INSTANCE_DIR/logs" "$INSTANCE_DIR/data/storage" "$INSTANCE_DIR/data/backups" "$INSTANCE_DIR/db"
+
+    if [[ "$(whoami)" == "root" ]]; then
+        msg "Running as root — pre-configuring Postgres user creation..."
+
+        if [[ -f "$CONFIG_FILE" ]]; then
+            # Patch existing config
+            node -e "
+const fs = require('fs');
+const p = '$CONFIG_FILE';
+const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+c.database = c.database || {};
+c.database.createPostgresUser = true;
+fs.writeFileSync(p, JSON.stringify(c, null, 2));
+" 2>/dev/null
+        else
+            # Create fresh config with createPostgresUser from the start
+            node -e "
+const fs = require('fs');
+fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
+  \"\\\$meta\": { version: 1, updatedAt: new Date().toISOString(), source: 'deepstack' },
+  database: {
+    mode: 'embedded-postgres',
+    embeddedPostgresDataDir: '$INSTANCE_DIR/db',
+    embeddedPostgresPort: 54329,
+    createPostgresUser: true,
+    backup: { enabled: true, intervalMinutes: 60, retentionDays: 30, dir: '$INSTANCE_DIR/data/backups' }
+  },
+  logging: { mode: 'file', logDir: '$INSTANCE_DIR/logs' },
+  server: {
+    deploymentMode: 'local_trusted', exposure: 'private',
+    bind: 'loopback', host: '127.0.0.1', port: 3100,
+    allowedHostnames: [], serveUi: true
+  },
+  auth: { baseUrlMode: 'auto', disableSignUp: false },
+  telemetry: { enabled: true },
+  storage: {
+    provider: 'local_disk',
+    localDisk: { baseDir: '$INSTANCE_DIR/data/storage' }
+  },
+  secrets: {
+    provider: 'local_encrypted', strictMode: false,
+    localEncrypted: { keyFilePath: '$INSTANCE_DIR/secrets/master.key' }
+  }
+}, null, 2));
+" 2>/dev/null
+        fi
+        ok "Root fix" "createPostgresUser enabled in config"
+    fi
+
+    # ── STEP C: Run onboard — show output live, kill when server starts ──
+    msg "Running Paperclip onboard (output shown below)..."
+    echo ""
+
+    # onboard --yes does setup then starts the server (which blocks forever)
+    # We pipe through a watcher that kills it once the server starts listening
+    npx paperclipai onboard --yes 2>&1 &
+    ONBOARD_PID=$!
+
+    # Wait for either: config created + server started, or process exits, or 120s timeout
+    WAITED=0
+    SERVER_STARTED=false
+    while kill -0 "$ONBOARD_PID" 2>/dev/null; do
+        # Check if the server is up (means onboard finished, server is running)
+        if curl -sf http://127.0.0.1:3100/api/health &>/dev/null; then
+            SERVER_STARTED=true
+            break
+        fi
+        sleep 2
+        WAITED=$((WAITED + 2))
+        if [[ $WAITED -ge 120 ]]; then
+            break
+        fi
+    done
+
+    # Kill the server process — we don't want it running from the installer
+    kill "$ONBOARD_PID" 2>/dev/null || true
+    wait "$ONBOARD_PID" 2>/dev/null || true
     pkill -f "paperclipai" 2>/dev/null || true
+    if command -v fuser &>/dev/null; then
+        fuser -k 3100/tcp 2>/dev/null || true
+    fi
+    sleep 1
+
+    # ── STEP D: Re-apply root fix (onboard may have overwritten config) ──
+    if [[ "$(whoami)" == "root" ]] && [[ -f "$CONFIG_FILE" ]]; then
+        node -e "
+const fs = require('fs');
+const p = '$CONFIG_FILE';
+const c = JSON.parse(fs.readFileSync(p, 'utf8'));
+c.database = c.database || {};
+c.database.createPostgresUser = true;
+fs.writeFileSync(p, JSON.stringify(c, null, 2));
+" 2>/dev/null || true
+    fi
 
     echo ""
+    line
+    echo ""
+
     if [[ -f "$CONFIG_FILE" ]]; then
-        ok "Paperclip" "configured at ~/.paperclip"
+        ok "Paperclip" "onboarded at ~/.paperclip"
+        if [[ "$SERVER_STARTED" == "true" ]]; then
+            ok "Server test" "health check passed"
+        fi
         mark_done "paperclip_config"
     else
-        warn "Paperclip" "run: npx paperclipai configure"
+        fail "Paperclip onboard failed"
+        printf "  ${GRAY}Try manually: npx paperclipai onboard --yes${RST}\n"
     fi
 fi
 
@@ -610,17 +666,39 @@ printf "${RST}\n"
 
 printf "  ${BOLD}${WHITE}DeepStack V1 deployed successfully!${RST}\n\n"
 
-printf "    ${ACCENT}deepstack start${RST}    ${DIM}Start the server${RST}\n"
-printf "    ${ACCENT}deepstack status${RST}   ${DIM}Check everything${RST}\n"
-printf "    ${ACCENT}deepstack ui${RST}       ${DIM}Open web dashboard${RST}\n"
-printf "    ${ACCENT}deepstack hermes${RST}   ${DIM}Run Hermes directly${RST}\n\n"
+line
+echo ""
+printf "  ${BOLD}${WHITE}HOW TO USE${RST}\n\n"
 
-printf "  ${GRAY}Web UI :${RST}  ${ULINE}${ACCENT}http://127.0.0.1:3100${RST}\n"
-printf "  ${GRAY}Config :${RST}  ${DIM}~/.hermes/config.yaml${RST}\n\n"
+printf "    ${ACCENT}1.${RST} ${WHITE}Start the server:${RST}\n"
+printf "       ${GREEN}deepstack start${RST}\n\n"
 
-printf "  ${DIM}Add to PATH if needed:${RST}\n"
+printf "    ${ACCENT}2.${RST} ${WHITE}Open the web dashboard:${RST}\n"
+printf "       ${ULINE}${ACCENT}http://YOUR-SERVER-IP:3100${RST}\n\n"
+
+printf "    ${ACCENT}3.${RST} ${WHITE}Other commands:${RST}\n"
+printf "       ${GREEN}deepstack status${RST}   ${DIM}Check if running${RST}\n"
+printf "       ${GREEN}deepstack stop${RST}     ${DIM}Stop the server${RST}\n"
+printf "       ${GREEN}deepstack config${RST}   ${DIM}View Hermes config${RST}\n"
+printf "       ${GREEN}deepstack doctor${RST}   ${DIM}Run diagnostics${RST}\n"
+printf "       ${GREEN}deepstack hermes${RST}   ${DIM}Run Hermes directly${RST}\n"
+
+echo ""
+line
+echo ""
+
+printf "  ${GRAY}Config files:${RST}\n"
+printf "    ${DIM}Paperclip : ~/.paperclip/instances/default/config.json${RST}\n"
+printf "    ${DIM}Hermes    : ~/.hermes/config.yaml${RST}\n"
+printf "    ${DIM}LLM Key   : ~/.hermes/.env${RST}\n\n"
+
+printf "  ${DIM}If 'deepstack' command not found, run:${RST}\n"
 printf "  ${DARK}export PATH=\"\$HOME/.local/bin:\$PATH\"${RST}\n\n"
-printf "  ${R3}SNBDHOST${RST} ${DARK}· Internal Use Only · Copyright yeaminlabs${RST}\n\n"
+
+line
+printf "  ${R3}SNBDHOST${RST} ${DARK}· Internal Use Only · Copyright yeaminlabs${RST}\n"
+line
+echo ""
 
 # Clean up state file — install completed successfully
 rm -f "$STATE_FILE" 2>/dev/null || true
