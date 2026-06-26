@@ -559,6 +559,9 @@ const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.server = c.server || {};
 c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
+c.server.customBindHost = '0.0.0.0';
+c.server.deploymentMode = 'local_trusted';
+c.server.exposure = 'private';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null
     else
@@ -576,6 +579,7 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   server: {
     deploymentMode: 'local_trusted', exposure: 'private',
     bind: 'custom', host: '0.0.0.0', port: 3100,
+    customBindHost: '0.0.0.0',
     allowedHostnames: [], serveUi: true
   },
   auth: { baseUrlMode: 'auto', disableSignUp: false },
@@ -643,6 +647,9 @@ const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.server = c.server || {};
 c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
+c.server.customBindHost = '0.0.0.0';
+c.server.deploymentMode = 'local_trusted';
+c.server.exposure = 'private';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
         if [[ "$(whoami)" == "root" ]]; then
