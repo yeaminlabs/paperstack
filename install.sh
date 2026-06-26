@@ -602,60 +602,55 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
 
     ok "Config" "bound to 0.0.0.0:3100"
 
-    # ── STEP C: Run onboard — as paperclip user if root ──
-    msg "Running Paperclip onboard (output shown below)..."
+    # ── STEP C: Run onboard (setup only, no server start) ──
+    msg "Running Paperclip onboard..."
     echo ""
 
+    # Run onboard with a short timeout — it does setup then tries to start
+    # the server (which we don't want yet). We kill it after config is created.
     if [[ "$(whoami)" == "root" ]]; then
-        su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai onboard --yes" 2>&1 &
+        su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && timeout 45 npx paperclipai onboard --yes" 2>&1 || true
     else
-        npx paperclipai onboard --yes 2>&1 &
+        timeout 45 npx paperclipai onboard --yes 2>&1 || true
     fi
-    ONBOARD_PID=$!
 
-    # Wait for either: config created + server started, or process exits, or 120s timeout
-    WAITED=0
-    SERVER_STARTED=false
-    while kill -0 "$ONBOARD_PID" 2>/dev/null; do
-        # Check if the server is up (means onboard finished, server is running)
-        if curl -sf http://127.0.0.1:3100/api/health &>/dev/null; then
-            SERVER_STARTED=true
-            break
-        fi
-        sleep 2
-        WAITED=$((WAITED + 2))
-        if [[ $WAITED -ge 120 ]]; then
-            break
-        fi
-    done
-
-    # Kill the server process — we don't want it running from the installer
-    kill "$ONBOARD_PID" 2>/dev/null || true
-    wait "$ONBOARD_PID" 2>/dev/null || true
+    # Kill any server it started
     pkill -f "paperclipai" 2>/dev/null || true
     if command -v fuser &>/dev/null; then
         fuser -k 3100/tcp 2>/dev/null || true
     fi
     sleep 1
 
-    # ── STEP D: Re-apply network fix (onboard may have overwritten config) ──
+    # ── STEP D: Patch config for VPS access (onboard overwrites to local_trusted) ──
+    # This MUST run after onboard because onboard always resets to local_trusted/loopback
+    CONFIG_FILE="$PAPERCLIP_HOME/.paperclip/instances/default/config.json"
     if [[ -f "$CONFIG_FILE" ]]; then
         node -e "
 const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
 c.server = c.server || {};
+c.server.deploymentMode = 'self_hosted';
+c.server.exposure = 'private';
 c.server.bind = 'custom';
 c.server.host = '0.0.0.0';
 c.server.customBindHost = '0.0.0.0';
-c.server.deploymentMode = 'self_hosted';
-c.server.exposure = 'private';
+c.server.port = 3100;
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
         if [[ "$(whoami)" == "root" ]]; then
             chown -R paperclip:paperclip "$PAPERCLIP_HOME/.paperclip" 2>/dev/null || true
         fi
-        ok "Network" "bound to 0.0.0.0 (accessible from any IP)"
+        ok "Network" "patched to self_hosted + bind 0.0.0.0:3100"
+    fi
+
+    # ── STEP E: Verify config is valid ──
+    echo ""
+    msg "Verifying config..."
+    if [[ "$(whoami)" == "root" ]]; then
+        su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai doctor" 2>&1 || true
+    else
+        npx paperclipai doctor 2>&1 || true
     fi
 
     echo ""
@@ -663,10 +658,7 @@ fs.writeFileSync(p, JSON.stringify(c, null, 2));
     echo ""
 
     if [[ -f "$CONFIG_FILE" ]]; then
-        ok "Paperclip" "onboarded at ~/.paperclip"
-        if [[ "$SERVER_STARTED" == "true" ]]; then
-            ok "Server test" "health check passed"
-        fi
+        ok "Paperclip" "onboarded at $PAPERCLIP_HOME/.paperclip"
         mark_done "paperclip_config"
     else
         fail "Paperclip onboard failed"
