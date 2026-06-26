@@ -91,22 +91,35 @@ USER_NAME=$(whoami)
 
 printf "  ${GRAY}System:${RST} ${WHITE}${OS}/${ARCH}${RST}  ${GRAY}User:${RST} ${WHITE}${USER_NAME}${RST}\n\n"
 
-# ── Clean slate — nuke everything from previous installs ─────
-msg "Cleaning previous installs..."
-pkill -f "paperclipai" 2>/dev/null || true
-if command -v fuser &>/dev/null; then
-    fuser -k 3100/tcp 2>/dev/null || true
-    fuser -k 54329/tcp 2>/dev/null || true
+# ── Check if already fully installed ─────────────────────────
+SKIP_INSTALL=false
+PAPERCLIP_HOME="$HOME"
+[[ "$(whoami)" == "root" ]] && id -u paperclip &>/dev/null 2>&1 && PAPERCLIP_HOME=$(eval echo ~paperclip 2>/dev/null || echo "/home/paperclip")
+EXISTING_CONFIG="$PAPERCLIP_HOME/.paperclip/instances/default/config.json"
+
+if check_cmd node && check_cmd npx && check_cmd pipx && [[ -f "$EXISTING_CONFIG" ]] && (check_cmd hermes || [[ -x "$HOME/.local/bin/hermes" ]] || [[ -x "$PAPERCLIP_HOME/.local/bin/hermes" ]]); then
+    ok "Paperclip + Hermes + DeepSeek" "already installed"
+    SKIP_INSTALL=true
+else
+    # ── Clean slate — nuke everything from previous installs ─────
+    msg "Cleaning previous installs..."
+    pkill -f "paperclipai" 2>/dev/null || true
+    pkill -f "pm2" 2>/dev/null || true
+    if command -v fuser &>/dev/null; then
+        fuser -k 3100/tcp 2>/dev/null || true
+        fuser -k 54329/tcp 2>/dev/null || true
+    fi
+    sleep 1
+    rm -rf "$HOME/.deepstack_install_state" "$HOME/.deepstack" "$HOME/.paperclip"
+    if id -u paperclip &>/dev/null 2>&1; then
+        rm -rf "$PAPERCLIP_HOME/.paperclip" "$PAPERCLIP_HOME/.hermes" 2>/dev/null || true
+    fi
+    ok "Clean" "previous data removed"
 fi
-sleep 1
-rm -rf "$HOME/.deepstack_install_state" "$HOME/.deepstack" "$HOME/.paperclip"
-if id -u paperclip &>/dev/null 2>&1; then
-    PAPERCLIP_HOME=$(eval echo ~paperclip 2>/dev/null || echo "/home/paperclip")
-    rm -rf "$PAPERCLIP_HOME/.paperclip" "$PAPERCLIP_HOME/.hermes" 2>/dev/null || true
-fi
-ok "Clean" "previous data removed"
 echo ""
 line
+
+if [[ "$SKIP_INSTALL" == "false" ]]; then
 
 # ══════════════════════════════════════════════════════════════
 #  STEP 1 — Choose LLM Provider
@@ -270,9 +283,13 @@ if [[ "${REPLY:-y}" =~ ^[Nn] ]]; then
     exit 0
 fi
 
+fi  # end SKIP_INSTALL check for prompts
+
 # ══════════════════════════════════════════════════════════════
 #  INSTALLING
 # ══════════════════════════════════════════════════════════════
+if [[ "$SKIP_INSTALL" == "false" ]]; then
+
 echo ""
 line
 echo ""
@@ -656,6 +673,105 @@ EOF
         printf "  ${GRAY}Try manually: npx paperclipai onboard --yes${RST}\n"
     fi
 
+fi  # end SKIP_INSTALL
+
+# ══════════════════════════════════════════════════════════════
+#  PM2 — Process manager for background running
+# ══════════════════════════════════════════════════════════════
+echo ""
+line
+echo ""
+printf "  ${BOLD}${WHITE}Setting up PM2 (process manager)...${RST}\n\n"
+
+if ! check_cmd pm2; then
+    msg "Installing PM2..."
+    npm install -g pm2 &>/dev/null &
+    spinner $! "Installing PM2..."
+    printf "\r"
+fi
+check_cmd pm2 && ok "PM2" "$(pm2 --version 2>/dev/null)" || fail "PM2" "install failed"
+
+# Stop any existing deepstack pm2 process
+pm2 delete deepstack 2>/dev/null || true
+
+# Determine who runs the server
+PAPERCLIP_HOME="$HOME"
+RUN_USER=""
+if [[ "$(whoami)" == "root" ]] && id -u paperclip &>/dev/null; then
+    PAPERCLIP_HOME=$(eval echo ~paperclip)
+    RUN_USER="paperclip"
+fi
+
+# Create PM2 ecosystem file
+PM2_CONFIG="$HOME/.deepstack_pm2.json"
+if [[ -n "$RUN_USER" ]]; then
+    cat > "$PM2_CONFIG" <<PMEOF
+{
+  "apps": [{
+    "name": "deepstack",
+    "script": "npx",
+    "args": "paperclipai run",
+    "cwd": "$PAPERCLIP_HOME",
+    "user": "$RUN_USER",
+    "autorestart": true,
+    "max_restarts": 10,
+    "restart_delay": 5000,
+    "env": {
+      "PATH": "/usr/local/bin:/usr/bin:$PAPERCLIP_HOME/.local/bin",
+      "HOME": "$PAPERCLIP_HOME",
+      "PAPERCLIP_HOME": "$PAPERCLIP_HOME/.paperclip"
+    }
+  }]
+}
+PMEOF
+else
+    cat > "$PM2_CONFIG" <<PMEOF
+{
+  "apps": [{
+    "name": "deepstack",
+    "script": "npx",
+    "args": "paperclipai run",
+    "autorestart": true,
+    "max_restarts": 10,
+    "restart_delay": 5000
+  }]
+}
+PMEOF
+fi
+
+# Start with PM2
+msg "Starting DeepStack via PM2..."
+pm2 start "$PM2_CONFIG" 2>/dev/null
+sleep 3
+
+# Check if it's running
+if pm2 list 2>/dev/null | grep -q "deepstack.*online"; then
+    ok "PM2" "deepstack running in background"
+else
+    warn "PM2" "deepstack may still be starting — check: pm2 logs deepstack"
+fi
+
+# Auto-start PM2 on boot
+pm2 save 2>/dev/null || true
+pm2 startup 2>/dev/null | grep "sudo" | bash 2>/dev/null || pm2 startup 2>/dev/null || true
+
+ok "PM2" "auto-start on boot enabled"
+
+# Wait for server to be ready
+msg "Waiting for server to respond..."
+WAITED=0
+while ! curl -sf http://127.0.0.1:3100/api/health &>/dev/null; do
+    sleep 2
+    WAITED=$((WAITED + 2))
+    if [[ $WAITED -ge 30 ]]; then
+        warn "Server" "still starting — check: pm2 logs deepstack"
+        break
+    fi
+done
+if curl -sf http://127.0.0.1:3100/api/health &>/dev/null; then
+    ok "Server" "responding on port 3100"
+fi
+
 # ── Launcher script ──────────────────────────────────────────
 LAUNCHER="$HOME/.local/bin/deepstack"
 mkdir -p "$HOME/.local/bin"
@@ -676,35 +792,58 @@ run_as_paperclip() {
 
 case "${1:-help}" in
     start)
-        printf "\n  ${RD}▸${R} Starting DeepStack...\n"
-        if [[ "$(whoami)" == "root" ]] && id -u paperclip &>/dev/null; then
-            printf "  ${D}Running as user 'paperclip' (Postgres requires non-root)${R}\n\n"
+        printf "\n  ${RD}▸${R} Starting DeepStack...\n\n"
+        if pm2 list 2>/dev/null | grep -q "deepstack.*online"; then
+            printf "  ${G}●${R} Already running\n\n"
+        elif [[ -f "$HOME/.deepstack_pm2.json" ]]; then
+            pm2 start "$HOME/.deepstack_pm2.json" 2>/dev/null
+            sleep 3
+            pm2 list 2>/dev/null | grep -q "deepstack.*online" \
+                && printf "  ${G}✓${R} Started via PM2 (background)\n" \
+                || printf "  ${GY}○${R} Starting... check: pm2 logs deepstack\n"
+        else
+            run_as_paperclip "npx paperclipai run"
         fi
         echo ""
-        run_as_paperclip "npx paperclipai run"
         ;;
     stop)
-        pkill -f "paperclipai" 2>/dev/null && printf "  ${G}✓${R} Stopped\n" || printf "  ${GY}Not running${R}\n"
+        pm2 stop deepstack 2>/dev/null && printf "  ${G}✓${R} Stopped\n" || \
+        (pkill -f "paperclipai" 2>/dev/null && printf "  ${G}✓${R} Stopped\n" || printf "  ${GY}Not running${R}\n")
+        ;;
+    restart)
+        pm2 restart deepstack 2>/dev/null && printf "  ${G}✓${R} Restarted\n" || printf "  ${GY}Not running${R}\n"
         ;;
     status)
         echo ""
         printf "  ${RD}${B}DEEPSTACK V1${R} ${D}— Status${R}\n\n"
-        curl -sf http://0.0.0.0:3100/api/health &>/dev/null \
-            && printf "  ${G}●${R} Paperclip    ${G}running${R} ${D}(port 3100)${R}\n" \
-            || printf "  ${GY}○${R} Paperclip    ${GY}stopped${R}\n"
+        if pm2 list 2>/dev/null | grep -q "deepstack.*online"; then
+            printf "  ${G}●${R} Paperclip    ${G}running${R} ${D}(PM2, port 3100)${R}\n"
+        elif curl -sf http://127.0.0.1:3100/api/health &>/dev/null; then
+            printf "  ${G}●${R} Paperclip    ${G}running${R} ${D}(port 3100)${R}\n"
+        else
+            printf "  ${GY}○${R} Paperclip    ${GY}stopped${R}\n"
+        fi
         H=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
         [[ -x "$H" ]] \
             && printf "  ${G}●${R} Hermes       ${G}installed${R}\n" \
             || printf "  ${GY}○${R} Hermes       ${GY}not found${R}\n"
         echo ""
+        pm2 list 2>/dev/null || true
+        echo ""
         ;;
     config)  run_as_paperclip "hermes config show 2>/dev/null" || true ;;
     doctor)  run_as_paperclip "npx paperclipai doctor" ;;
-    logs)
+    logs)    pm2 logs deepstack --lines 50 2>/dev/null || printf "  ${GY}No logs found${R}\n" ;;
+    restart-fresh)
+        printf "\n  ${RD}▸${R} Fresh restart (new database)...\n"
+        pm2 stop deepstack 2>/dev/null || true
+        pkill -f "paperclipai" 2>/dev/null || true
         PH=$(eval echo ~paperclip 2>/dev/null || echo "$HOME")
-        tail -f "$PH/.paperclip/instances/default/logs"/*.log 2>/dev/null || \
-        tail -f "$HOME/.paperclip/instances/default/logs"/*.log 2>/dev/null || \
-        printf "  ${GY}No logs found${R}\n"
+        rm -rf "$PH/.paperclip/instances/default/db"
+        mkdir -p "$PH/.paperclip/instances/default/db"
+        [[ "$(whoami)" == "root" ]] && chown -R paperclip:paperclip "$PH/.paperclip" 2>/dev/null || true
+        pm2 restart deepstack 2>/dev/null && printf "  ${G}✓${R} Fresh restart done\n" || printf "  ${GY}○${R} Start with: deepstack start\n"
+        echo ""
         ;;
     update)
         printf "\n  ${RD}▸${R} Updating DeepStack...\n\n"
@@ -755,16 +894,18 @@ case "${1:-help}" in
     *)
         echo ""
         printf "  ${RD}${B}DEEPSTACK V1${R} ${D}— SNBDHOST${R}\n\n"
-        printf "    ${AC}start${R}       Start server\n"
-        printf "    ${AC}stop${R}        Stop server\n"
-        printf "    ${AC}status${R}      Check status\n"
-        printf "    ${AC}update${R}      Update from GitHub + packages\n"
-        printf "    ${AC}allow-host${R}  Allow a hostname/IP for access\n"
-        printf "    ${AC}config${R}      Show config\n"
-        printf "    ${AC}doctor${R}      Run diagnostics\n"
-        printf "    ${AC}logs${R}        Tail logs\n"
-        printf "    ${AC}hermes${R}      Run Hermes\n"
-        printf "    ${AC}ui${R}          Open web UI\n"
+        printf "    ${AC}start${R}         Start server (PM2 background)\n"
+        printf "    ${AC}stop${R}          Stop server\n"
+        printf "    ${AC}restart${R}       Restart server\n"
+        printf "    ${AC}restart-fresh${R} Restart with fresh database\n"
+        printf "    ${AC}status${R}        Check status + PM2 info\n"
+        printf "    ${AC}logs${R}          Show server logs\n"
+        printf "    ${AC}update${R}        Update from GitHub + packages\n"
+        printf "    ${AC}allow-host${R}    Allow a hostname/IP for access\n"
+        printf "    ${AC}config${R}        Show Hermes config\n"
+        printf "    ${AC}doctor${R}        Run diagnostics\n"
+        printf "    ${AC}hermes${R}        Run Hermes directly\n"
+        printf "    ${AC}ui${R}            Open web UI\n"
         echo ""
         ;;
 esac
@@ -797,20 +938,22 @@ line
 echo ""
 printf "  ${BOLD}${WHITE}HOW TO USE${RST}\n\n"
 
-printf "    ${ACCENT}1.${RST} ${WHITE}Start the server:${RST}\n"
-printf "       ${GREEN}deepstack start${RST}\n\n"
-
 SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || curl -sf ifconfig.me 2>/dev/null || echo "YOUR-SERVER-IP")
-printf "    ${ACCENT}2.${RST} ${WHITE}Open the web dashboard (use http, NOT https):${RST}\n"
+
+printf "    ${GREEN}Server is running in background via PM2${RST}\n"
+printf "    ${GREEN}Auto-restarts on crash + survives reboot${RST}\n\n"
+
+printf "    ${ACCENT}1.${RST} ${WHITE}Open the web dashboard (use http, NOT https):${RST}\n"
 printf "       ${ULINE}${ACCENT}http://${SERVER_IP}:3100${RST}\n\n"
 printf "       ${RED}⚠  Use http:// not https:// — there is no SSL${RST}\n\n"
 
-printf "    ${ACCENT}3.${RST} ${WHITE}Other commands:${RST}\n"
-printf "       ${GREEN}deepstack status${RST}   ${DIM}Check if running${RST}\n"
-printf "       ${GREEN}deepstack stop${RST}     ${DIM}Stop the server${RST}\n"
-printf "       ${GREEN}deepstack config${RST}   ${DIM}View Hermes config${RST}\n"
-printf "       ${GREEN}deepstack doctor${RST}   ${DIM}Run diagnostics${RST}\n"
-printf "       ${GREEN}deepstack hermes${RST}   ${DIM}Run Hermes directly${RST}\n"
+printf "    ${ACCENT}2.${RST} ${WHITE}Commands:${RST}\n"
+printf "       ${GREEN}deepstack status${RST}     ${DIM}Check status${RST}\n"
+printf "       ${GREEN}deepstack logs${RST}       ${DIM}View logs${RST}\n"
+printf "       ${GREEN}deepstack restart${RST}    ${DIM}Restart server${RST}\n"
+printf "       ${GREEN}deepstack stop${RST}       ${DIM}Stop server${RST}\n"
+printf "       ${GREEN}deepstack config${RST}     ${DIM}View Hermes config${RST}\n"
+printf "       ${GREEN}deepstack update${RST}     ${DIM}Update from GitHub${RST}\n"
 
 echo ""
 line
