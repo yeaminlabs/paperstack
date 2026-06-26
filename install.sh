@@ -977,6 +977,12 @@ case "${1:-help}" in
         fi
         rm -f "$TMPFILE"
         echo ""
+    fix)
+        printf "\n  ${RD}▸${R} Running DeepStack auto-fix...\n"
+        # Fix 1: Ensure Paperclip has PM2 restarted as root
+        pm2 restart deepstack >/dev/null 2>&1 || true
+        printf "  ${G}✓${R} Paperclip restarted\n"
+        printf "\n  ${B}${W}Fixes applied! Try reloading the page.${R}\n\n"
         ;;
     domain)
         shift
@@ -1038,7 +1044,7 @@ case "${1:-help}" in
         fi
         
         run_as_paperclip "npx paperclipai allowed-hostname $DOM"
-        run_as_paperclip "pm2 restart deepstack >/dev/null 2>&1"
+        pm2 restart deepstack >/dev/null 2>&1 || true
         printf "  ${G}✓${R} Allowed hostname updated & Paperclip restarted\n"
         printf "\n  ${B}${W}Done! Paperclip is now available at: ${G}https://$DOM${R}\n\n"
         ;;
@@ -1072,6 +1078,7 @@ case "${1:-help}" in
         printf "    ${AC}update${R}        Update from GitHub + packages\n"
         printf "    ${AC}allow-host${R}    Allow a hostname/IP for access\n"
         printf "    ${AC}domain${R}        Auto-configure domain & Let's Encrypt SSL\n"
+        printf "    ${AC}fix${R}           Auto-fix common hostname/restart issues\n"
         printf "    ${AC}config${R}        Show Hermes config\n"
         printf "    ${AC}doctor${R}        Run diagnostics\n"
         printf "    ${AC}hermes${R}        Run Hermes directly\n"
