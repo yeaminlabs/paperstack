@@ -9,8 +9,19 @@ set -euo pipefail
 
 PAPERSTACK_VERSION="1.0.0"
 
+# ── TTY detection ────────────────────────────────────────────
+# When piped from curl, stdin is the pipe and stdout may not be a tty.
+# Reopen stdin from /dev/tty so interactive prompts work.
+if [[ ! -t 0 ]] && [[ -e /dev/tty ]]; then
+    exec 3</dev/tty || true
+else
+    exec 3<&0
+fi
+TTY_FD=3
+
 # ── Colors & Formatting ─────────────────────────────────────
-if [[ -t 1 ]] && command -v tput &>/dev/null && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
+# Enable colors if /dev/tty exists (even when stdout is piped through)
+if command -v tput &>/dev/null && [[ $(tput colors 2>/dev/null || echo 0) -ge 8 ]]; then
     RST="\033[0m"
     BOLD="\033[1m"
     DIM="\033[2m"
@@ -111,7 +122,7 @@ step_warn() {
 }
 
 info() {
-    printf "  ${S_PIPE} ${GRAY}%s${RST}\n" "$1"
+    printf "  ${S_PIPE} ${GRAY}%b${RST}\n" "$1"
 }
 
 detail() {
@@ -126,13 +137,13 @@ prompt_input() {
         printf "  ${S_KEY} ${BOLD}${WHITE}%s${RST}\n" "$label"
         [[ -n "$default" ]] && printf "  ${S_PIPE} ${DIM}Press enter to keep existing key${RST}\n"
         printf "  ${S_PIPE} ${CYAN}▸ ${RST}"
-        read -rs value
+        read -rs value <&${TTY_FD}
         echo ""
     else
         printf "  ${S_GEAR} ${BOLD}${WHITE}%s${RST}\n" "$label"
         [[ -n "$default" ]] && printf "  ${S_PIPE} ${DIM}Default: %s${RST}\n" "$default"
         printf "  ${S_PIPE} ${CYAN}▸ ${RST}"
-        read -r value
+        read -r value <&${TTY_FD}
     fi
     value="${value:-$default}"
     eval "$var_name='$value'"
@@ -148,8 +159,8 @@ prompt_select() {
     echo ""
     printf "  ${S_GEAR} ${BOLD}${WHITE}%s${RST}\n" "$label"
 
-    # If not interactive, default to first option
-    if [[ ! -t 0 ]]; then
+    # If no tty available, default to first option
+    if ! exec 2>/dev/null <&${TTY_FD}; then
         eval "$var_name='${options[0]}'"
         printf "  ${S_PIPE} ${DIM}Auto-selected: ${options[0]}${RST}\n"
         return
@@ -164,7 +175,7 @@ prompt_select() {
             fi
         done
 
-        read -rsn1 key
+        read -rsn1 key <&${TTY_FD}
         case "$key" in
             A) ((selected > 0)) && ((selected--)) ;;  # Up
             B) ((selected < count - 1)) && ((selected++)) ;;  # Down
@@ -502,7 +513,7 @@ main() {
     local providers=("deepseek" "anthropic" "openai" "minimax" "openrouter" "google")
     local provider=""
 
-    if [[ -t 0 ]]; then
+    if [[ -e /dev/tty ]]; then
         prompt_select "Select LLM Provider (↑/↓ then Enter)" provider "${providers[@]}"
     else
         provider="${PAPERSTACK_PROVIDER:-deepseek}"
@@ -533,7 +544,7 @@ main() {
 
     if [[ -z "$model" ]]; then
         IFS=' ' read -ra model_list <<< "$models_str"
-        if [[ -t 0 ]]; then
+        if [[ -e /dev/tty ]]; then
             prompt_select "Select model" model "${model_list[@]}"
         else
             model="${model_list[0]}"
@@ -556,9 +567,9 @@ main() {
         "  ${S_BOX} Paperclip ${DIM}(AI company platform)${RST}" \
         "  ${S_BOX} Hermes Agent ${DIM}(Nous Research agent)${RST}"
 
-    if [[ -t 0 ]]; then
+    if [[ -e /dev/tty ]]; then
         printf "  ${BOLD}${WHITE}Proceed with installation?${RST} ${DIM}[Y/n]${RST} "
-        read -r confirm
+        read -r confirm <&${TTY_FD}
         if [[ "$confirm" =~ ^[Nn] ]]; then
             echo ""
             printf "  ${GRAY}Installation cancelled.${RST}\n\n"
