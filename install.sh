@@ -469,34 +469,19 @@ if is_done "paperclip_config"; then
     ok "Paperclip" "(done)"
 else
     # Kill any existing Paperclip process hogging the port
-    if command -v lsof &>/dev/null; then
+    if command -v fuser &>/dev/null; then
+        fuser -k 3100/tcp 2>/dev/null || true
+    elif command -v lsof &>/dev/null; then
         PID_ON_PORT=$(lsof -ti :3100 2>/dev/null || true)
-        if [[ -n "$PID_ON_PORT" ]]; then
-            kill "$PID_ON_PORT" 2>/dev/null || true
-            sleep 1
-        fi
+        [[ -n "$PID_ON_PORT" ]] && kill "$PID_ON_PORT" 2>/dev/null || true
     fi
+    sleep 1
 
-    msg "Setting up Paperclip..."
-    npx paperclipai onboard --yes &>/dev/null &
-    spinner $! "Running Paperclip onboard..."
-    printf "\r"
-
-    # Fix Postgres-as-root: enable createPostgresUser in config
+    # Fix Postgres-as-root BEFORE onboard so it doesn't fail
     CONFIG_FILE="$HOME/.paperclip/instances/default/config.json"
-    if [[ -f "$CONFIG_FILE" ]] && [[ "$(whoami)" == "root" ]]; then
-        if check_cmd python3; then
-            python3 -c "
-import json, sys
-with open('$CONFIG_FILE', 'r') as f:
-    cfg = json.load(f)
-db = cfg.get('database', {})
-db['createPostgresUser'] = True
-cfg['database'] = db
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(cfg, f, indent=2)
-" 2>/dev/null || true
-        elif check_cmd node; then
+    if [[ "$(whoami)" == "root" ]]; then
+        if [[ -f "$CONFIG_FILE" ]]; then
+            # Patch existing config
             node -e "
 const fs = require('fs');
 const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
@@ -504,10 +489,51 @@ cfg.database = cfg.database || {};
 cfg.database.createPostgresUser = true;
 fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 2));
 " 2>/dev/null || true
+            ok "Root fix" "createPostgresUser enabled"
         fi
+    fi
+
+    echo ""
+    line
+    echo ""
+    printf "  ${BOLD}${WHITE}Setting up Paperclip...${RST}\n\n"
+
+    # Run onboard directly (NOT in background) so output is visible
+    # Use timeout to prevent hanging — onboard --yes also starts the
+    # server which blocks forever, so we just run configure + onboard
+    # without --yes, or with a timeout that kills the server part.
+    if [[ -f "$CONFIG_FILE" ]]; then
+        # Already onboarded before, just need the root fix
+        ok "Paperclip" "already configured at ~/.paperclip"
+    else
+        # First time — run onboard with timeout (onboard part takes ~10s,
+        # but --yes then starts the server which blocks forever)
+        timeout 60 npx paperclipai onboard --yes 2>&1 || true
+    fi
+
+    # Re-apply root fix after onboard (in case onboard recreated the config)
+    CONFIG_FILE="$HOME/.paperclip/instances/default/config.json"
+    if [[ "$(whoami)" == "root" ]] && [[ -f "$CONFIG_FILE" ]]; then
+        node -e "
+const fs = require('fs');
+const cfg = JSON.parse(fs.readFileSync('$CONFIG_FILE', 'utf8'));
+cfg.database = cfg.database || {};
+cfg.database.createPostgresUser = true;
+fs.writeFileSync('$CONFIG_FILE', JSON.stringify(cfg, null, 2));
+" 2>/dev/null || true
         ok "Root fix" "createPostgresUser enabled for embedded Postgres"
     fi
 
+    # Kill the server that --yes started (if it's still running)
+    if command -v fuser &>/dev/null; then
+        fuser -k 3100/tcp 2>/dev/null || true
+    elif command -v lsof &>/dev/null; then
+        PID_ON_PORT=$(lsof -ti :3100 2>/dev/null || true)
+        [[ -n "$PID_ON_PORT" ]] && kill "$PID_ON_PORT" 2>/dev/null || true
+    fi
+    pkill -f "paperclipai" 2>/dev/null || true
+
+    echo ""
     if [[ -f "$CONFIG_FILE" ]]; then
         ok "Paperclip" "configured at ~/.paperclip"
         mark_done "paperclip_config"
