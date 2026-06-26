@@ -639,7 +639,18 @@ fs.writeFileSync(p, JSON.stringify(c, null, 2));
         if [[ "$(whoami)" == "root" ]]; then
             chown -R paperclip:paperclip "$PAPERCLIP_HOME/.paperclip" 2>/dev/null || true
         fi
-        ok "Network" "patched to self_hosted + bind 0.0.0.0:3100"
+        ok "Network" "patched to authenticated + lan (0.0.0.0:3100)"
+
+        # Auto-add server IP as allowed hostname
+        SERVER_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || curl -sf ifconfig.me 2>/dev/null || true)
+        if [[ -n "$SERVER_IP" ]]; then
+            if [[ "$(whoami)" == "root" ]]; then
+                su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai allowed-hostname $SERVER_IP" 2>&1 || true
+            else
+                npx paperclipai allowed-hostname "$SERVER_IP" 2>&1 || true
+            fi
+            ok "Allowed host" "$SERVER_IP"
+        fi
     fi
 
     # ── STEP E: Verify config is valid ──
@@ -714,6 +725,16 @@ case "${1:-help}" in
         tail -f "$HOME/.paperclip/instances/default/logs"/*.log 2>/dev/null || \
         printf "  ${GY}No logs found${R}\n"
         ;;
+    allow-host)
+        shift
+        if [[ -z "${1:-}" ]]; then
+            printf "\n  ${RD}Usage:${R} deepstack allow-host <hostname-or-ip>\n"
+            printf "  ${D}Example: deepstack allow-host 46.62.205.66${R}\n\n"
+            exit 1
+        fi
+        run_as_paperclip "npx paperclipai allowed-hostname $1"
+        printf "  ${G}✓${R} Allowed hostname: ${AC}$1${R}\n"
+        ;;
     hermes)  shift; run_as_paperclip "hermes $*" ;;
     ui)
         IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
@@ -725,14 +746,15 @@ case "${1:-help}" in
     *)
         echo ""
         printf "  ${RD}${B}DEEPSTACK V1${R} ${D}— SNBDHOST${R}\n\n"
-        printf "    ${AC}start${R}    Start server\n"
-        printf "    ${AC}stop${R}     Stop server\n"
-        printf "    ${AC}status${R}   Check status\n"
-        printf "    ${AC}config${R}   Show config\n"
-        printf "    ${AC}doctor${R}   Run diagnostics\n"
-        printf "    ${AC}logs${R}     Tail logs\n"
-        printf "    ${AC}hermes${R}   Run Hermes\n"
-        printf "    ${AC}ui${R}       Open web UI\n"
+        printf "    ${AC}start${R}       Start server\n"
+        printf "    ${AC}stop${R}        Stop server\n"
+        printf "    ${AC}status${R}      Check status\n"
+        printf "    ${AC}allow-host${R}  Allow a hostname/IP for access\n"
+        printf "    ${AC}config${R}      Show config\n"
+        printf "    ${AC}doctor${R}      Run diagnostics\n"
+        printf "    ${AC}logs${R}        Tail logs\n"
+        printf "    ${AC}hermes${R}      Run Hermes\n"
+        printf "    ${AC}ui${R}          Open web UI\n"
         echo ""
         ;;
 esac
