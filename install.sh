@@ -488,25 +488,70 @@ else
     CONFIG_FILE="$INSTANCE_DIR/config.json"
     mkdir -p "$INSTANCE_DIR/secrets" "$INSTANCE_DIR/logs" "$INSTANCE_DIR/data/storage" "$INSTANCE_DIR/data/backups" "$INSTANCE_DIR/db"
 
+    # ── Create paperclip system user if running as root ──
     if [[ "$(whoami)" == "root" ]]; then
-        msg "Running as root — pre-configuring Postgres user creation..."
+        msg "Running as root — creating 'paperclip' system user..."
 
-        if [[ -f "$CONFIG_FILE" ]]; then
-            # Patch existing config — root fix + bind to all interfaces
-            node -e "
+        if ! id -u paperclip &>/dev/null; then
+            useradd --system --create-home --shell /bin/bash paperclip 2>/dev/null || true
+        fi
+
+        # Copy node/npm/npx to paperclip user's PATH
+        PAPERCLIP_HOME=$(eval echo ~paperclip)
+
+        # Give paperclip user access to node/npm
+        mkdir -p "$PAPERCLIP_HOME/.local/bin"
+
+        # Copy hermes + pipx stuff to paperclip user
+        if [[ -d "$HOME/.local/share/pipx" ]]; then
+            cp -rn "$HOME/.local/share/pipx" "$PAPERCLIP_HOME/.local/share/" 2>/dev/null || true
+        fi
+        if [[ -f "$HOME/.local/bin/hermes" ]]; then
+            cp -n "$HOME/.local/bin/hermes" "$PAPERCLIP_HOME/.local/bin/" 2>/dev/null || true
+            cp -n "$HOME/.local/bin/hermes-agent" "$PAPERCLIP_HOME/.local/bin/" 2>/dev/null || true
+            cp -n "$HOME/.local/bin/hermes-acp" "$PAPERCLIP_HOME/.local/bin/" 2>/dev/null || true
+        fi
+
+        # Copy hermes config
+        if [[ -d "$HOME/.hermes" ]]; then
+            cp -rn "$HOME/.hermes" "$PAPERCLIP_HOME/" 2>/dev/null || true
+        fi
+
+        # Move paperclip data dir to paperclip user's home
+        INSTANCE_DIR="$PAPERCLIP_HOME/.paperclip/instances/default"
+        CONFIG_FILE="$INSTANCE_DIR/config.json"
+        mkdir -p "$INSTANCE_DIR/secrets" "$INSTANCE_DIR/logs" "$INSTANCE_DIR/data/storage" "$INSTANCE_DIR/data/backups" "$INSTANCE_DIR/db"
+
+        # Copy existing paperclip data if it was in root's home
+        if [[ -d "$HOME/.paperclip" ]] && [[ "$HOME" != "$PAPERCLIP_HOME" ]]; then
+            cp -rn "$HOME/.paperclip/"* "$PAPERCLIP_HOME/.paperclip/" 2>/dev/null || true
+        fi
+
+        # Own everything
+        chown -R paperclip:paperclip "$PAPERCLIP_HOME" 2>/dev/null || true
+
+        ok "User" "'paperclip' system user ready"
+    else
+        PAPERCLIP_HOME="$HOME"
+    fi
+
+    # ── Write config (bind to 0.0.0.0, no createPostgresUser needed anymore) ──
+    INSTANCE_DIR="$PAPERCLIP_HOME/.paperclip/instances/default"
+    CONFIG_FILE="$INSTANCE_DIR/config.json"
+    mkdir -p "$INSTANCE_DIR/secrets" "$INSTANCE_DIR/logs" "$INSTANCE_DIR/data/storage" "$INSTANCE_DIR/data/backups" "$INSTANCE_DIR/db"
+
+    if [[ -f "$CONFIG_FILE" ]]; then
+        node -e "
 const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
-c.database = c.database || {};
-c.database.createPostgresUser = true;
 c.server = c.server || {};
 c.server.bind = 'all';
 c.server.host = '0.0.0.0';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null
-        else
-            # Create fresh config with createPostgresUser from the start
-            node -e "
+    else
+        node -e "
 const fs = require('fs');
 fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   \"\\\$meta\": { version: 1, updatedAt: new Date().toISOString(), source: 'deepstack' },
@@ -514,7 +559,6 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
     mode: 'embedded-postgres',
     embeddedPostgresDataDir: '$INSTANCE_DIR/db',
     embeddedPostgresPort: 54329,
-    createPostgresUser: true,
     backup: { enabled: true, intervalMinutes: 60, retentionDays: 30, dir: '$INSTANCE_DIR/data/backups' }
   },
   logging: { mode: 'file', logDir: '$INSTANCE_DIR/logs' },
@@ -535,17 +579,23 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
   }
 }, null, 2));
 " 2>/dev/null
-        fi
-        ok "Root fix" "createPostgresUser enabled in config"
     fi
 
-    # ── STEP C: Run onboard — show output live, kill when server starts ──
+    if [[ "$(whoami)" == "root" ]]; then
+        chown -R paperclip:paperclip "$PAPERCLIP_HOME/.paperclip" 2>/dev/null || true
+    fi
+
+    ok "Config" "bound to 0.0.0.0:3100"
+
+    # ── STEP C: Run onboard — as paperclip user if root ──
     msg "Running Paperclip onboard (output shown below)..."
     echo ""
 
-    # onboard --yes does setup then starts the server (which blocks forever)
-    # We pipe through a watcher that kills it once the server starts listening
-    npx paperclipai onboard --yes 2>&1 &
+    if [[ "$(whoami)" == "root" ]]; then
+        su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai onboard --yes" 2>&1 &
+    else
+        npx paperclipai onboard --yes 2>&1 &
+    fi
     ONBOARD_PID=$!
 
     # Wait for either: config created + server started, or process exits, or 120s timeout
@@ -573,19 +623,20 @@ fs.writeFileSync('$CONFIG_FILE', JSON.stringify({
     fi
     sleep 1
 
-    # ── STEP D: Re-apply fixes (onboard may have overwritten config) ──
+    # ── STEP D: Re-apply network fix (onboard may have overwritten config) ──
     if [[ -f "$CONFIG_FILE" ]]; then
         node -e "
 const fs = require('fs');
 const p = '$CONFIG_FILE';
 const c = JSON.parse(fs.readFileSync(p, 'utf8'));
-c.database = c.database || {};
-c.database.createPostgresUser = true;
 c.server = c.server || {};
 c.server.bind = 'all';
 c.server.host = '0.0.0.0';
 fs.writeFileSync(p, JSON.stringify(c, null, 2));
 " 2>/dev/null || true
+        if [[ "$(whoami)" == "root" ]]; then
+            chown -R paperclip:paperclip "$PAPERCLIP_HOME/.paperclip" 2>/dev/null || true
+        fi
         ok "Network" "bound to 0.0.0.0 (accessible from any IP)"
     fi
 
@@ -614,13 +665,31 @@ cat > "$LAUNCHER" << 'LAUNCHER_EOF'
 set -euo pipefail
 RD="\033[38;5;196m" G="\033[38;5;114m" W="\033[38;5;255m" D="\033[2m" B="\033[1m" R="\033[0m" GY="\033[38;5;245m" AC="\033[38;5;203m"
 
+# If running as root, re-exec as the paperclip user
+run_as_paperclip() {
+    if [[ "$(whoami)" == "root" ]] && id -u paperclip &>/dev/null; then
+        su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && $*"
+    else
+        eval "$*"
+    fi
+}
+
 case "${1:-help}" in
-    start)   printf "\n  ${RD}▸${R} Starting DeepStack...\n\n"; npx paperclipai run ;;
-    stop)    pkill -f "paperclipai" 2>/dev/null && printf "  ${G}✓${R} Stopped\n" || printf "  ${GY}Not running${R}\n" ;;
+    start)
+        printf "\n  ${RD}▸${R} Starting DeepStack...\n"
+        if [[ "$(whoami)" == "root" ]] && id -u paperclip &>/dev/null; then
+            printf "  ${D}Running as user 'paperclip' (Postgres requires non-root)${R}\n\n"
+        fi
+        echo ""
+        run_as_paperclip "npx paperclipai run"
+        ;;
+    stop)
+        pkill -f "paperclipai" 2>/dev/null && printf "  ${G}✓${R} Stopped\n" || printf "  ${GY}Not running${R}\n"
+        ;;
     status)
         echo ""
         printf "  ${RD}${B}DEEPSTACK V1${R} ${D}— Status${R}\n\n"
-        curl -sf http://127.0.0.1:3100/api/health &>/dev/null \
+        curl -sf http://0.0.0.0:3100/api/health &>/dev/null \
             && printf "  ${G}●${R} Paperclip    ${G}running${R} ${D}(port 3100)${R}\n" \
             || printf "  ${GY}○${R} Paperclip    ${GY}stopped${R}\n"
         H=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes")
@@ -629,11 +698,22 @@ case "${1:-help}" in
             || printf "  ${GY}○${R} Hermes       ${GY}not found${R}\n"
         echo ""
         ;;
-    config)  H=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes"); "$H" config show 2>/dev/null ;;
-    doctor)  npx paperclipai doctor ;;
-    logs)    tail -f "$HOME/.paperclip/instances/default/logs"/*.log 2>/dev/null ;;
-    hermes)  shift; H=$(which hermes 2>/dev/null || echo "$HOME/.local/bin/hermes"); "$H" "$@" ;;
-    ui)      U="http://127.0.0.1:3100"; command -v xdg-open &>/dev/null && xdg-open "$U" || command -v open &>/dev/null && open "$U" || printf "  Open: ${AC}%s${R}\n" "$U" ;;
+    config)  run_as_paperclip "hermes config show 2>/dev/null" || true ;;
+    doctor)  run_as_paperclip "npx paperclipai doctor" ;;
+    logs)
+        PH=$(eval echo ~paperclip 2>/dev/null || echo "$HOME")
+        tail -f "$PH/.paperclip/instances/default/logs"/*.log 2>/dev/null || \
+        tail -f "$HOME/.paperclip/instances/default/logs"/*.log 2>/dev/null || \
+        printf "  ${GY}No logs found${R}\n"
+        ;;
+    hermes)  shift; run_as_paperclip "hermes $*" ;;
+    ui)
+        IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
+        U="http://${IP}:3100"
+        command -v xdg-open &>/dev/null && xdg-open "$U" || \
+        command -v open &>/dev/null && open "$U" || \
+        printf "  Open: ${AC}%s${R}\n" "$U"
+        ;;
     *)
         echo ""
         printf "  ${RD}${B}DEEPSTACK V1${R} ${D}— SNBDHOST${R}\n\n"
