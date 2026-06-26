@@ -977,6 +977,7 @@ case "${1:-help}" in
         fi
         rm -f "$TMPFILE"
         echo ""
+        ;;
     fix)
         printf "\n  ${RD}▸${R} Running DeepStack auto-fix...\n"
         # Fix 1: Ensure Paperclip has PM2 restarted as root
