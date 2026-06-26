@@ -585,6 +585,66 @@ fs.writeFileSync(p, JSON.stringify(c, null, 2));
         npx paperclipai doctor 2>&1 || true
     fi
 
+    # ── STEP F: Create AI Agent ──
+    echo ""
+    msg "Assigning AI Agent to Paperclip..."
+    
+    if [[ "$(whoami)" == "root" ]]; then
+        COMPANY_ID=$(su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai company list --json 2>/dev/null | node -e \"try { console.log(JSON.parse(require('fs').readFileSync(0))[0].id) } catch(e) {}\"" 2>/dev/null || echo "")
+    else
+        COMPANY_ID=$(npx paperclipai company list --json 2>/dev/null | node -e "try { console.log(JSON.parse(require('fs').readFileSync(0))[0].id) } catch(e) {}" 2>/dev/null || echo "")
+    fi
+
+    if [[ -n "$COMPANY_ID" ]]; then
+        HERMES_BIN_PATH="$HOME/.local/bin/hermes"
+        if [[ "$(whoami)" == "root" ]]; then
+            HERMES_BIN_PATH="$PAPERCLIP_HOME/.local/bin/hermes"
+        fi
+
+        ENV_KEY=$(echo "${PROVIDER}" | tr '[:lower:]' '[:upper:]' | tr '-' '_')_API_KEY
+        
+        PAYLOAD=$(cat <<EOF
+{
+  "name": "AI Assistant",
+  "role": "general",
+  "adapterType": "hermes_local",
+  "adapterConfig": {
+    "provider": "${PROVIDER}",
+    "model": "${MODEL}",
+    "envVars": {
+      "${ENV_KEY}": "${API_KEY}"
+    },
+    "hermesCommand": "${HERMES_BIN_PATH}",
+    "dangerouslySkipPermissions": true
+  },
+  "runtimeConfig": {
+    "heartbeat": {
+      "enabled": true,
+      "wakeOnDemand": true
+    }
+  },
+  "permissions": {
+    "canCreateAgents": true
+  }
+}
+EOF
+)
+        
+        if [[ "$(whoami)" == "root" ]]; then
+            TMP_PAYLOAD=$(mktemp)
+            echo "$PAYLOAD" > "$TMP_PAYLOAD"
+            chown paperclip:paperclip "$TMP_PAYLOAD"
+            su - paperclip -c "export PATH=\"/usr/local/bin:/usr/bin:\$HOME/.local/bin:\$PATH\" && npx paperclipai agent create -C \"$COMPANY_ID\" --payload-json \"\$(cat $TMP_PAYLOAD)\"" &>/dev/null || true
+            rm -f "$TMP_PAYLOAD"
+        else
+            npx paperclipai agent create -C "$COMPANY_ID" --payload-json "$PAYLOAD" &>/dev/null || true
+        fi
+        
+        ok "Agent" "AI successfully assigned and ready"
+    else
+        warn "Agent" "Could not assign AI (Company ID missing)"
+    fi
+
     echo ""
     line
     echo ""
