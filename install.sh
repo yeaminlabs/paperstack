@@ -548,14 +548,9 @@ ok "Hermes" "provider=${PROVIDER}  model=${MODEL}"
             find "$NPM_GLOBAL/paperclipai" -path "*/native" -type d -exec chmod a+rwx {} \; 2>/dev/null || true
         fi
 
-        # Copy hermes + pipx stuff to paperclip user
-        if [[ -d "$HOME/.local/share/pipx" ]]; then
-            cp -rn "$HOME/.local/share/pipx" "$PAPERCLIP_HOME/.local/share/" 2>/dev/null || true
-        fi
-        if [[ -f "$HOME/.local/bin/hermes" ]]; then
-            cp -n "$HOME/.local/bin/hermes" "$PAPERCLIP_HOME/.local/bin/" 2>/dev/null || true
-            cp -n "$HOME/.local/bin/hermes-agent" "$PAPERCLIP_HOME/.local/bin/" 2>/dev/null || true
-            cp -n "$HOME/.local/bin/hermes-acp" "$PAPERCLIP_HOME/.local/bin/" 2>/dev/null || true
+        # Install hermes for paperclip user properly
+        if check_cmd pipx; then
+            su - paperclip -c "pipx install hermes-agent 2>/dev/null" || true
         fi
 
         # Copy hermes config
