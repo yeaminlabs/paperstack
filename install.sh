@@ -978,6 +978,69 @@ case "${1:-help}" in
         rm -f "$TMPFILE"
         echo ""
         ;;
+    domain)
+        shift
+        if [[ -z "${1:-}" ]]; then
+            printf "\n  ${RD}Usage:${R} deepstack domain <yourdomain.com> [email]\n"
+            exit 1
+        fi
+        DOM="$1"
+        EMAIL="${2:-}"
+        printf "\n  ${RD}▸${R} Configuring domain: ${AC}$DOM${R}...\n"
+        
+        # Check Caddy
+        if ! command -v caddy &>/dev/null; then
+            printf "  ${D}Caddy is not installed. Installing...${R}\n"
+            if command -v apt-get &>/dev/null; then
+                sudo apt-get install -y debian-keyring debian-archive-keyring apt-transport-https >/dev/null 2>&1
+                curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' | sudo gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg >/dev/null 2>&1
+                curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' | sudo tee /etc/apt/sources.list.d/caddy-stable.list >/dev/null 2>&1
+                sudo apt-get update -qq >/dev/null 2>&1
+                sudo apt-get install caddy -y -qq >/dev/null 2>&1
+            elif command -v dnf &>/dev/null; then
+                sudo dnf install 'dnf-command(copr)' -y >/dev/null 2>&1
+                sudo dnf copr enable @caddy/caddy -y >/dev/null 2>&1
+                sudo dnf install caddy -y >/dev/null 2>&1
+            elif command -v yum &>/dev/null; then
+                sudo yum install yum-plugin-copr -y >/dev/null 2>&1
+                sudo yum copr enable @caddy/caddy -y >/dev/null 2>&1
+                sudo yum install caddy -y >/dev/null 2>&1
+            elif command -v apk &>/dev/null; then
+                sudo apk add --no-cache caddy >/dev/null 2>&1
+            fi
+        fi
+        
+        if command -v caddy &>/dev/null; then
+            CADDYFILE="/etc/caddy/Caddyfile"
+            [[ "$(uname -s)" == "Darwin" ]] && CADDYFILE="/usr/local/etc/Caddyfile"
+            
+            CADDY_CONF="$DOM {
+    reverse_proxy localhost:3100
+"
+            [[ -n "$EMAIL" ]] && CADDY_CONF="${CADDY_CONF}    tls $EMAIL
+"
+            CADDY_CONF="${CADDY_CONF}}"
+
+            if [[ "$(whoami)" == "root" ]]; then
+                echo "$CADDY_CONF" > "$CADDYFILE" 2>/dev/null || true
+                systemctl enable caddy >/dev/null 2>&1 || true
+                systemctl restart caddy >/dev/null 2>&1 || caddy reload --config "$CADDYFILE" >/dev/null 2>&1 || true
+            else
+                TMP_CADDY=$(mktemp)
+                echo "$CADDY_CONF" > "$TMP_CADDY"
+                sudo mv "$TMP_CADDY" "$CADDYFILE" 2>/dev/null || true
+                sudo systemctl enable caddy >/dev/null 2>&1 || true
+                sudo systemctl restart caddy >/dev/null 2>&1 || sudo caddy reload --config "$CADDYFILE" >/dev/null 2>&1 || true
+            fi
+            printf "  ${G}✓${R} Caddy configured for HTTPS\n"
+        else
+            printf "  ${RD}✗${R} Caddy installation failed.\n"
+        fi
+        
+        run_as_paperclip "npx paperclipai allowed-hostname $DOM" >/dev/null 2>&1 || true
+        printf "  ${G}✓${R} Allowed hostname updated in Paperclip\n"
+        printf "\n  ${B}${W}Done! Paperclip is now available at: ${G}https://$DOM${R}\n\n"
+        ;;
     allow-host)
         shift
         if [[ -z "${1:-}" ]]; then
@@ -1007,6 +1070,7 @@ case "${1:-help}" in
         printf "    ${AC}logs${R}          Show server logs\n"
         printf "    ${AC}update${R}        Update from GitHub + packages\n"
         printf "    ${AC}allow-host${R}    Allow a hostname/IP for access\n"
+        printf "    ${AC}domain${R}        Auto-configure domain & Let's Encrypt SSL\n"
         printf "    ${AC}config${R}        Show Hermes config\n"
         printf "    ${AC}doctor${R}        Run diagnostics\n"
         printf "    ${AC}hermes${R}        Run Hermes directly\n"
