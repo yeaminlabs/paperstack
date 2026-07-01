@@ -872,6 +872,23 @@ if curl -sf http://127.0.0.1:3100/api/health &>/dev/null; then
     ok "Server" "responding on port 3100"
 fi
 
+# Extract admin login URL if available
+CLAIM_URL=$(pm2 logs deepstack --lines 50 --nostream 2>/dev/null | grep -o 'http://localhost:[0-9]*/board-claim/[a-zA-Z0-9?=&]*' | tail -n 1 || true)
+if [[ -n "$CLAIM_URL" ]]; then
+    if [[ -n "${CUSTOM_DOMAIN:-}" ]]; then
+        CLAIM_URL=$(echo "$CLAIM_URL" | sed "s|http://localhost:[0-9]*|https://$CUSTOM_DOMAIN|")
+    else
+        PUBLIC_IP=$(curl -s ifconfig.me || echo "localhost")
+        if [[ "$PUBLIC_IP" != "localhost" ]]; then
+            CLAIM_URL=$(echo "$CLAIM_URL" | sed "s|http://localhost:[0-9]*|http://$PUBLIC_IP:3100|")
+        fi
+    fi
+    echo ""
+    printf "  ${RED}▸${RST} ${BOLD}${WHITE}Admin Access URL (Board Claim):${RST}\n"
+    printf "    ${ACCENT}${CLAIM_URL}${RST}\n\n"
+    printf "  ${GRAY}Open this one-time link in your browser to get CEO access!${RST}\n"
+fi
+
 # ── Launcher script ──────────────────────────────────────────
 LAUNCHER="$HOME/.local/bin/deepstack"
 mkdir -p "$HOME/.local/bin"
